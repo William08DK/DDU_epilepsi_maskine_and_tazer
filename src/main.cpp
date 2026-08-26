@@ -1,58 +1,213 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
 #ifdef __AVR__
- #include <avr/power.h>
+  #include <avr/power.h>
 #endif
 
+#define Buzz_Buzz 3
 #define LED_PIN   6
-#define Stage_1 7
-#define Stage_2 8
-#define Stage_3 9
-#define Stage_4 10 
+#define Stage_1   7
+#define Stage_2   8
+#define Stage_3   9
+#define Stage_4  10
 
-#define LED_COUNT   60
+#define LED_COUNT 60
 
-int random_delay = 0;
+int do_you_get_tazed = 0;
 
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
+// Modes
+enum Mode {
+  MODE_OFF = 0,
+  MODE_RAINBOW,
+  MODE_THEATER,
+  MODE_COLORWIPE,
+  MODE_EPILEPSI
+};
+
+Mode currentMode = MODE_OFF;
+
+// Timing
+unsigned long previousMillis = 0;
+const unsigned long frameInterval = 20;   // ~50 FPS – adjust as needed
+
+// Animation state variables
+long firstPixelHue = 0;          // for rainbow
+int theaterStep = 0;             // for theaterChase
+int colorWipePos = 0;            // for colorWipe
+uint32_t colorWipeColor = 0;
+int colorWipeColorIndex = 0;
+unsigned long epilepsiNext = 0;
+int random_delay = 20;
 
 void setup() {
   Serial.begin(9600);
+  pinMode(Buzz_Buzz, OUTPUT);
   pinMode(Stage_1, INPUT_PULLUP);
-  // These lines are specifically to support the Adafruit Trinket 5V 16 MHz.
-  // Any other board, you can remove this part (but no harm leaving it):
+  pinMode(Stage_2, INPUT_PULLUP);
+  pinMode(Stage_3, INPUT_PULLUP);
+  pinMode(Stage_4, INPUT_PULLUP);
+
 #if defined(__AVR_ATtiny85__) && (F_CPU == 16000000)
   clock_prescale_set(clock_div_1);
 #endif
 
-  // END of Trinket-specific code.
-
-  strip.begin();           // INITIALIZE NeoPixel strip object (REQUIRED)
-  strip.show();            // Turn OFF all pixels ASAP
-  strip.setBrightness(50); // Set BRIGHTNESS to about 1/5 (max = 255)
-
+  strip.begin();
+  strip.show();
+  strip.setBrightness(50);
 }
 
-void epilepsi(uint32_t color, int wait) {
-  for(int i=0; i<strip.numPixels(); i++) { // For each pixel in strip...
-    strip.setPixelColor(i, color);         //  Set pixel's color (in RAM)
+// ---------- Non-blocking animation frames ----------
+
+bool epilepsiIsOn = false;          // tracks whether we are currently showing colour or black
+unsigned long epilepsiInterval = 15;
+
+void updateRainbow() {
+  strip.rainbow(firstPixelHue);
+  strip.show();
+  firstPixelHue += 256;
+  if (firstPixelHue >= 5 * 65536L) firstPixelHue = 0;
+}
+
+void updateTheaterChase() {
+  static int a = 0, b = 0;
+  static uint32_t colors[] = {
+    strip.Color(127, 127, 127),
+    strip.Color(127, 0, 0),
+    strip.Color(0, 0, 127)
+  };
+  static int colorIndex = 0;
+
+  strip.clear();
+  for (int c = b; c < strip.numPixels(); c += 3) {
+    strip.setPixelColor(c, colors[colorIndex]);
   }
-      strip.show();                          //  Update strip to match
-      delay(random_delay);
+  strip.show();
+
+  b++;
+  if (b >= 3) {
+    b = 0;
+    a++;
+    if (a >= 10) {
+      a = 0;
+      colorIndex = (colorIndex + 1) % 3;
+    }
+  }
 }
+
+void updateColorWipe() {
+  static uint32_t colors[] = {
+    strip.Color(255, 0, 0),
+    strip.Color(0, 255, 0),
+    strip.Color(0, 0, 255)
+  };
+
+  if (colorWipePos < strip.numPixels()) {
+    strip.setPixelColor(colorWipePos, colors[colorWipeColorIndex]);
+    strip.show();
+    colorWipePos++;
+  } else {
+    colorWipePos = 0;
+    colorWipeColorIndex = (colorWipeColorIndex + 1) % 3;
+    // optional: clear before next color
+    // strip.clear(); strip.show();
+  }
+}
+
+
+
+void updateEpilepsi() {
+  unsigned long now = millis();
+  
+  if (now >= epilepsiNext) {
+    if (epilepsiIsOn) {
+      // Turn everything OFF (the important part for the strobe)
+      strip.clear();
+      strip.show();
+      epilepsiIsOn = false;
+      epilepsiInterval = random(8, 25);   // short black period
+    } else {
+      // Full bright random colour
+      uint32_t c = strip.Color(random(0, 256), random(0, 256), random(0, 256));
+      for (int i = 0; i < strip.numPixels(); i++) {
+        strip.setPixelColor(i, c);
+      }
+      strip.show();
+      epilepsiIsOn = true;
+      epilepsiInterval = random(5, 20);   // even shorter colour flash
+    }
+    epilepsiNext = now + epilepsiInterval;
+  }
+}
+
+void turnOff() {
+  strip.clear();
+  strip.show();
+}
+
+// ---------- Main loop ----------
 
 void loop() {
-  digitalRead(Stage_1);
-  if (digitalRead(Stage_1) == LOW) {
-    Serial.println("on");
-      // Fill along the length of the strip in various colors...
-  epilepsi(strip.Color(0,   0,   0), 0); // Red
-  epilepsi(strip.Color(  random(0,255), random(0,255), random(0,255)), 255); // Green
-  random_delay = random(10, 30);
-  } if (digitalRead(Stage_1) == HIGH) {
-  epilepsi(strip.Color(0,   0,   0), 0);
+  // Read buttons (LOW = pressed because of INPUT_PULLUP)
+  bool btn1 = (digitalRead(Stage_1) == LOW);
+  bool btn2 = (digitalRead(Stage_2) == LOW);
+  bool btn3 = (digitalRead(Stage_3) == LOW);
+  bool btn4 = (digitalRead(Stage_4) == LOW);
+
+  // Decide new mode (priority: 1 > 2 > 3 > 4)
+  Mode newMode = MODE_OFF;
+  if (btn1) newMode = MODE_RAINBOW;
+  else if (btn2) newMode = MODE_THEATER;
+  else if (btn3) newMode = MODE_COLORWIPE;
+  else if (btn4) newMode = MODE_EPILEPSI;
+
+  // Mode change → reset animation state
+  if (newMode != currentMode) {
+    currentMode = newMode;
+    previousMillis = 0;           // force immediate update
+    firstPixelHue = 0;
+    colorWipePos = 0;
+    colorWipeColorIndex = 0;
+    epilepsiIsOn = false;
+    epilepsiNext = 0;
+    
+
+    if (currentMode == MODE_OFF) {
+      turnOff();
+      Serial.println("OFF");
+    } else if (currentMode == MODE_RAINBOW) {
+      Serial.println("rainbow");
+    } else if (currentMode == MODE_THEATER) {
+      Serial.println("theaterChase");
+    } else if (currentMode == MODE_COLORWIPE) {
+      Serial.println("colorWipe");
+    } else if (currentMode == MODE_EPILEPSI) {
+      Serial.println("epilepsi");
+      strip.setBrightness(255);
+    }
   }
 
+  // Run one frame of the current animation (non-blocking)
+  unsigned long now = millis();
+  if (now - previousMillis >= frameInterval) {
+    previousMillis = now;
+
+    switch (currentMode) {
+      case MODE_RAINBOW:   updateRainbow();      break;
+      case MODE_THEATER:   updateTheaterChase(); break;
+      case MODE_COLORWIPE: updateColorWipe();    break;
+      case MODE_EPILEPSI:  updateEpilepsi();     break;
+      case MODE_OFF:       /* already off */     break;
+    }
+  }
+  
+  do_you_get_tazed = random(0,10);
+  if(do_you_get_tazed <= 5){
+    digitalWrite(Buzz_Buzz, HIGH);
+    Serial.println("GET TAZED");
+  } else {
+    digitalWrite(Buzz_Buzz, LOW);
+  }
 
 }
