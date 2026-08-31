@@ -128,8 +128,8 @@ void updateEpilepsi() {
       epilepsiIsOn = false;
       epilepsiInterval = random(8, 25);
     } else {
-      uint32_t c = strip.Color(random(0, 256), random(0, 256), random(0, 256));
       for (int i = 0; i < strip.numPixels(); i++) {
+        uint32_t c = strip.Color(random(0, 256), random(0, 256), random(0, 256));
         strip.setPixelColor(i, c);
       }
       strip.show();
@@ -153,7 +153,7 @@ void loop() {
   bool btn4 = (digitalRead(Stage_4) == HIGH);
 
   Mode newMode = MODE_OFF;
-  if (btn1)      newMode = MODE_RAINBOW;
+  if (btn1)      newMode = MODE_EPILEPSI; //MODE_RAINBOW
   else if (btn2 && btn1) newMode = MODE_THEATER;
   else if (btn3 && btn2 && btn1) newMode = MODE_COLORWIPE;
   else if (btn4 && btn3 && btn2 && btn1) newMode = MODE_EPILEPSI;
